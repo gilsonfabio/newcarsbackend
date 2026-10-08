@@ -3,6 +3,11 @@ const cors = require('cors');
 const routes = require('./routes');
 require('dotenv/config');
 
+console.log(
+    'Google Routes API configurada:',
+    Boolean(process.env.GOOGLE_ROUTES_API_KEY)
+);
+
 const app = express();
 
 app.use((req, res, next) => {

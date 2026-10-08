@@ -8,6 +8,7 @@ module.exports = {
 
     async atualizarLocalizacao(request, response) {
         try {
+
             const usuarioId = request.user.id;
 
             const {
@@ -26,7 +27,8 @@ module.exports = {
             ) {
 
                 return response.status(400).json({
-                    error: 'O campo online deve ser booleano.'
+                    error:
+                        'O campo online deve ser booleano.'
                 });
 
             }
@@ -49,10 +51,6 @@ module.exports = {
                     'usuarios.tipo',
                     'MOTORISTA'
                 )
-                .where(
-                    'usuarios.status',
-                    'ATIVO'
-                )
                 .select(
                     'motoristas.id',
                     'motoristas.usuario_id',
@@ -60,9 +58,14 @@ module.exports = {
                     'motoristas.status',
                     'motoristas.online',
                     'motoristas.latitude',
-                    'motoristas.longitude'
+                    'motoristas.longitude',
+                    'usuarios.status as usuario_status'
                 )
                 .first();
+
+            // ==========================================
+            // MOTORISTA NÃO ENCONTRADO
+            // ==========================================
 
             if (!motorista) {
 
@@ -74,14 +77,68 @@ module.exports = {
             }
 
             // ==========================================
-            // MOTORISTA PRECISA ESTAR APROVADO
+            // USUÁRIO PRECISA ESTAR ATIVO
             // ==========================================
 
-            if (motorista.status !== 'APROVADO') {
+            if (
+                motorista.usuario_status !== 'ATIVO'
+            ) {
+
                 return response.status(403).json({
                     error:
-                        'O motorista ainda não está aprovado.'
+                        'Usuário não está ativo.'
                 });
+
+            }
+
+            // ==================================================
+            // REGRA DE APROVAÇÃO DO MOTORISTA
+            // ==================================================
+            //
+            // PENDENTE   -> não pode ficar online
+            // BLOQUEADO  -> não pode ficar online
+            // ATIVO      -> pode ficar online
+            //
+            // IMPORTANTE:
+            // Essa validação só impede o ONLINE.
+            // O motorista ainda pode enviar uma localização
+            // enquanto estiver offline, caso necessário.
+            // ==================================================
+
+            if (
+                online === true &&
+                motorista.status === 'PENDENTE'
+            ) {
+
+                return response.status(403).json({
+                    error:
+                        'Motorista ainda não foi aprovado.'
+                });
+
+            }
+
+            if (
+                online === true &&
+                motorista.status === 'BLOQUEADO'
+            ) {
+
+                return response.status(403).json({
+                    error:
+                        'Motorista bloqueado.'
+                });
+
+            }
+
+            if (
+                online === true &&
+                motorista.status !== 'ATIVO'
+            ) {
+
+                return response.status(403).json({
+                    error:
+                        'Motorista não está autorizado a ficar online.'
+                });
+
             }
 
             // ==========================================
@@ -104,10 +161,12 @@ module.exports = {
             if (
                 possuiLatitude !== possuiLongitude
             ) {
+
                 return response.status(400).json({
                     error:
                         'Latitude e longitude devem ser informadas juntas.'
                 });
+
             }
 
             // ==========================================
@@ -131,6 +190,10 @@ module.exports = {
                 const longitudeNumero =
                     Number(longitude);
 
+                // ------------------------------------------
+                // VALIDA NÚMEROS
+                // ------------------------------------------
+
                 if (
                     !Number.isFinite(latitudeNumero) ||
                     !Number.isFinite(longitudeNumero)
@@ -143,6 +206,10 @@ module.exports = {
 
                 }
 
+                // ------------------------------------------
+                // VALIDA LATITUDE
+                // ------------------------------------------
+
                 if (
                     latitudeNumero < -90 ||
                     latitudeNumero > 90
@@ -154,6 +221,10 @@ module.exports = {
                     });
 
                 }
+
+                // ------------------------------------------
+                // VALIDA LONGITUDE
+                // ------------------------------------------
 
                 if (
                     longitudeNumero < -180 ||
@@ -178,7 +249,9 @@ module.exports = {
             // ATUALIZA ONLINE
             // ==========================================
 
-            if (online !== undefined) {
+            if (
+                online !== undefined
+            ) {
 
                 dadosAtualizacao.online =
                     online ? 1 : 0;
@@ -209,7 +282,9 @@ module.exports = {
                     'id',
                     motorista.id
                 )
-                .update(dadosAtualizacao);
+                .update(
+                    dadosAtualizacao
+                );
 
             // ==========================================
             // BUSCA MOTORISTA ATUALIZADO
@@ -261,7 +336,6 @@ module.exports = {
             });
 
         }
-
     }
 
 };

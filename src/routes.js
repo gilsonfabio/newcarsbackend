@@ -5,6 +5,7 @@ const routes = express.Router();
 const AuthController = require('./controllers/AuthController');
 const CorridaController = require('./controllers/CorridaController');
 const MotoristaController = require('./controllers/MotoristaController');
+const VeiculoController = require('./controllers/VeiculoController');
 
 const auth = require('./middlewares/auth');
 
@@ -28,7 +29,18 @@ routes.get('/health', (request, response) => {
 routes.post('/signIn', AuthController.signIn);
 routes.post('/signUp', AuthController.signUp);
 
-routes.post('/corridas', auth, CorridaController.store);
+routes.post(
+    '/corridas/estimativa',
+    auth,
+    CorridaController.estimativa
+);
+
+routes.post(
+    '/corridas',
+    auth,
+    CorridaController.store
+);
+
 routes.get(
     '/corridas/disponiveis',
     auth,
@@ -79,6 +91,21 @@ routes.put(
     '/motoristas/localizacao',
     auth,
     MotoristaController.atualizarLocalizacao
+);
+
+routes.get(
+    '/marcas', 
+    VeiculoController.marcas
+);
+
+routes.get(
+    '/modelos/marca/:marcaId',
+    VeiculoController.modelosPorMarca
+);
+
+routes.get(
+    '/categorias',
+    VeiculoController.categorias
 );
 
 module.exports = routes;
