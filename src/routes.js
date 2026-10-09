@@ -6,8 +6,10 @@ const AuthController = require('./controllers/AuthController');
 const CorridaController = require('./controllers/CorridaController');
 const MotoristaController = require('./controllers/MotoristaController');
 const VeiculoController = require('./controllers/VeiculoController');
+const AdminMotoristaController = require('./controllers/AdminMotoristaController');
 
 const auth = require('./middlewares/auth');
+const admin = require('./middlewares/admin');
 
 routes.get('/', (request, response) => {
 
@@ -106,6 +108,30 @@ routes.get(
 routes.get(
     '/categorias',
     VeiculoController.categorias
+);
+
+// ==========================================================
+// ADMINISTRAÇÃO DE MOTORISTAS
+// ==========================================================
+
+routes.get(
+    '/admin/motoristas/pendentes',
+    auth,
+    admin,
+    AdminMotoristaController.listarPendentes
+);
+
+routes.put(
+    '/admin/motoristas/:motoristaId/status',
+    auth,
+    admin,
+    AdminMotoristaController.atualizarStatus
+);
+
+routes.put(
+    '/corridas/:id/recusar',
+    auth,
+    CorridaController.recusar
 );
 
 module.exports = routes;

@@ -1,6 +1,15 @@
 const connection = require('../database/connection');
 const { randomUUID } = require('crypto');
 
+const {
+    despacharProximoMotorista,
+    recusarOferta,
+    limparTemporizadoresCorrida
+} = require('../services/DespachoCorridas');
+
+const { obterIO } = require('../socket');
+
+
 // ==========================================================
 // CALCULA DISTÂNCIA E DURAÇÃO PELA GOOGLE ROUTES API
 // ==========================================================
@@ -647,88 +656,56 @@ module.exports = {
         try {
             const usuarioId = request.user.id;
 
-            // ==========================================
-            // BUSCA O MOTORISTA
-            // ==========================================
-
             const motorista = await connection('motoristas')
-                .join(
-                    'usuarios',
-                    'usuarios.id',
-                    'motoristas.usuario_id'
-                )
-                .where(
-                    'motoristas.usuario_id',
-                    usuarioId
-                )
-                .where(
-                    'usuarios.tipo',
-                    'MOTORISTA'
-                )
-                .where(
-                    'usuarios.status',
-                    'ATIVO'
-                )
-                .where(
-                    'motoristas.status',
-                    'APROVADO'
-                )
-                .select(
-                    'motoristas.id',
-                    'motoristas.usuario_id',
-                    'motoristas.status',
-                    'motoristas.online',
-                    'motoristas.latitude',
-                    'motoristas.longitude'
-                )
+                .join('usuarios', 'usuarios.id', 'motoristas.usuario_id')
+                .where('motoristas.usuario_id', usuarioId)
+                .where('usuarios.tipo', 'MOTORISTA')
+                .where('usuarios.status', 'ATIVO')
+                .where('motoristas.status', 'APROVADO')
+                .select('motoristas.id', 'motoristas.online')
                 .first();
 
             if (!motorista) {
                 return response.status(403).json({
-                    error:
-                        'Cadastro de motorista não encontrado, não aprovado ou usuário não autorizado.'
+                    error: 'Cadastro de motorista não encontrado ou não aprovado.'
                 });
             }
-
-            // ==========================================
-            // MOTORISTA PRECISA ESTAR ONLINE
-            // ==========================================
 
             if (!motorista.online) {
                 return response.status(403).json({
-                    error:
-                        'O motorista precisa estar online para visualizar corridas disponíveis.'
+                    error: 'O motorista precisa estar online.'
                 });
             }
 
-            // ==========================================
-            // BUSCA CORRIDAS
-            // ==========================================
-
-            const corridas = await connection('corridas')
-                .where(
-                    'status',
-                    'SOLICITADA'
+            const tentativa = await connection('tentativas_corrida')
+                .join(
+                    'corridas',
+                    'corridas.id',
+                    'tentativas_corrida.corrida_id'
                 )
-                .orderBy(
-                    'created_at',
-                    'desc'
-                );
+                .where('tentativas_corrida.motorista_id', motorista.id)
+                .where('tentativas_corrida.status', 'PENDENTE')
+                .where('tentativas_corrida.data_expiracao', '>', connection.fn.now())
+                .where('corridas.status', 'SOLICITADA')
+                .select(
+                    'tentativas_corrida.id as tentativa_id',
+                    'tentativas_corrida.data_expiracao',
+                    'corridas.*'
+                )
+                .first();
 
             return response.json({
-                corridas
+                corridas: tentativa ? [{
+                    ...tentativa,
+                    tentativa_id: tentativa.tentativa_id,
+                    data_expiracao: tentativa.data_expiracao
+                }] : []
             });
-
         } catch (error) {
-
-            console.error(
-                'Erro ao buscar corridas disponíveis:',
-                error
-            );
+            console.error('Erro ao buscar ofertas:', error);
 
             return response.status(500).json({
-                error:
-                    'Erro ao buscar corridas disponíveis.'
+                error: 'Erro ao buscar ofertas de corridas.'
             });
         }
     },
@@ -740,170 +717,192 @@ module.exports = {
     async aceitar(request, response) {
         try {
             const usuarioId = request.user.id;
-            const { id } = request.params;
-
-            // ==========================================
-            // CONFIRMA MOTORISTA
-            // ==========================================
+            const { id: corridaId } = request.params;
 
             const motorista = await connection('motoristas')
-                .join(
-                    'usuarios',
-                    'usuarios.id',
-                    'motoristas.usuario_id'
-                )
-                .where(
-                    'motoristas.usuario_id',
-                    usuarioId
-                )
-                .where(
-                    'usuarios.tipo',
-                    'MOTORISTA'
-                )
-                .where(
-                    'usuarios.status',
-                    'ATIVO'
-                )
-                .select(
-                    'motoristas.id',
-                    'motoristas.usuario_id',
-                    'motoristas.status',
-                    'motoristas.online'
-                )
+                .join('usuarios', 'usuarios.id', 'motoristas.usuario_id')
+                .where('motoristas.usuario_id', usuarioId)
+                .where('usuarios.tipo', 'MOTORISTA')
+                .where('usuarios.status', 'ATIVO')
+                .where('motoristas.status', 'APROVADO')
+                .select('motoristas.id', 'motoristas.online')
                 .first();
 
             if (!motorista) {
                 return response.status(403).json({
-                    error:
-                        'Cadastro de motorista não encontrado ou usuário não autorizado.'
+                    error: 'Motorista não encontrado ou não aprovado.'
                 });
             }
-
-            // ==========================================
-            // MOTORISTA PRECISA ESTAR APROVADO
-            // ==========================================
-
-            if (motorista.status !== 'APROVADO') {
-                return response.status(403).json({
-                    error:
-                        'O motorista ainda não está aprovado.'
-                });
-            }
-
-            // ==========================================
-            // MOTORISTA PRECISA ESTAR ONLINE
-            // ==========================================
 
             if (!motorista.online) {
                 return response.status(403).json({
-                    error:
-                        'O motorista precisa estar online para aceitar uma corrida.'
+                    error: 'O motorista precisa estar online para aceitar.'
                 });
             }
 
-            // ==========================================
-            // VERIFICA SE JÁ POSSUI CORRIDA ATIVA
-            // ==========================================
+            const resultado = await connection.transaction(async trx => {
+                const corrida = await trx('corridas')
+                    .where('id', corridaId)
+                    .forUpdate()
+                    .first();
 
-            const corridaAtiva = await connection('corridas')
-                .where(
-                    'motorista_id',
-                    motorista.id
-                )
-                .whereIn(
-                    'status',
-                    [
-                        'ACEITA',
-                        'EM_ANDAMENTO'
-                    ]
-                )
-                .orderBy(
-                    'created_at',
-                    'desc'
-                )
-                .first();
-
-            if (corridaAtiva) {
-                return response.status(409).json({
-                    error:
-                        'O motorista já possui uma corrida aceita ou em andamento.',
-                    corrida: corridaAtiva
-                });
-            }
-
-            // ==========================================
-            // INICIA TRANSAÇÃO
-            // ==========================================
-
-            const corrida = await connection.transaction(
-                async (trx) => {
-
-                    /*
-                    * Só atualizamos se a corrida ainda estiver
-                    * SOLICITADA.
-                    *
-                    * Isso evita que dois motoristas aceitem
-                    * a mesma corrida.
-                    */
-
-                    const quantidade = await trx('corridas')
-                        .where(
-                            'id',
-                            id
-                        )
-                        .where(
-                            'status',
-                            'SOLICITADA'
-                        )
-                        .update({
-                            motorista_id: motorista.id,
-                            status: 'ACEITA'
-                        });
-
-                    if (quantidade === 0) {
-                        return null;
-                    }
-
-                    return await trx('corridas')
-                        .where(
-                            'id',
-                            id
-                        )
-                        .first();
+                if (!corrida || corrida.status !== 'SOLICITADA') {
+                    return { erro: 'Esta corrida não está mais disponível.' };
                 }
-            );
 
-            // ==========================================
-            // CORRIDA JÁ FOI ACEITA
-            // ==========================================
+                const tentativa = await trx('tentativas_corrida')
+                    .where('corrida_id', corridaId)
+                    .where('motorista_id', motorista.id)
+                    .where('status', 'PENDENTE')
+                    .where('data_expiracao', '>', trx.fn.now())
+                    .forUpdate()
+                    .first();
 
-            if (!corrida) {
-                return response.status(409).json({
-                    error:
-                        'Esta corrida não está mais disponível.'
-                });
-            }
+                if (!tentativa) {
+                    return {
+                        erro: 'Esta oferta expirou ou não foi destinada a você.'
+                    };
+                }
 
-            // ==========================================
-            // RESPOSTA
-            // ==========================================
+                const corridaAtiva = await trx('corridas')
+                    .where('motorista_id', motorista.id)
+                    .whereIn('status', ['ACEITA', 'EM_ANDAMENTO'])
+                    .first();
 
-            return response.json({
-                message:
-                    'Corrida aceita com sucesso.',
-                corrida
+                if (corridaAtiva) {
+                    return {
+                        erro: 'Você já possui uma corrida aceita ou em andamento.'
+                    };
+                }
+
+                // Confere novamente a categoria do veículo ativo.
+                const possuiVeiculo = await trx('veiculos')
+                    .where('motorista_id', motorista.id)
+                    .where('categoria_id', corrida.categoria_veiculo_id)
+                    .where('ativo', 1)
+                    .first();
+
+                if (!possuiVeiculo) {
+                    return {
+                        erro: 'Você não possui veículo ativo nesta categoria.'
+                    };
+                }
+
+                await trx('corridas')
+                    .where('id', corridaId)
+                    .where('status', 'SOLICITADA')
+                    .update({
+                        motorista_id: motorista.id,
+                        status: 'ACEITA',
+                        updated_at: trx.fn.now()
+                    });
+
+                await trx('tentativas_corrida')
+                    .where('id', tentativa.id)
+                    .update({
+                        status: 'ACEITA',
+                        data_resposta: trx.fn.now(),
+                        updated_at: trx.fn.now()
+                    });
+
+                // Cancela qualquer outra oferta pendente para esta corrida.
+                await trx('tentativas_corrida')
+                    .where('corrida_id', corridaId)
+                    .where('status', 'PENDENTE')
+                    .update({
+                        status: 'CANCELADA',
+                        data_resposta: trx.fn.now(),
+                        updated_at: trx.fn.now()
+                    });
+
+                const corridaAtualizada = await trx('corridas')
+                    .where('id', corridaId)
+                    .first();
+
+                return {
+                    corrida: corridaAtualizada,
+                    tentativaId: tentativa.id
+                };
             });
 
-        } catch (error) {
+            if (resultado.erro) {
+                return response.status(409).json({
+                    error: resultado.erro
+                });
+            }
 
-            console.error(
-                'Erro ao aceitar corrida:',
-                error
-            );
+            // A corrida já foi aceita no banco.
+            // Encerra todos os temporizadores associados a ela.
+            limparTemporizadoresCorrida(corridaId);
+
+            const io = obterIO();
+
+            io.to(`usuario:${resultado.corrida.cliente_id}`)
+                .emit('corrida:aceita', {
+                    corrida: resultado.corrida
+                });
+
+            io.to(`usuario:${usuarioId}`)
+                .emit('corrida:aceite_confirmado', {
+                    corrida: resultado.corrida
+                });
+
+            return response.json({
+                message: 'Corrida aceita com sucesso.',
+                corrida: resultado.corrida
+            });
+        } catch (error) {
+            console.error('Erro ao aceitar corrida:', error);
 
             return response.status(500).json({
-                error:
-                    'Erro ao aceitar corrida.'
+                error: 'Erro ao aceitar corrida.'
+            });
+        }
+    },
+
+    // ==========================================================
+    // MOTORISTA RECUSA CORRIDA
+    // ==========================================================
+
+    async recusar(request, response) {
+        try {
+            const usuarioId = request.user.id;
+            const { id: corridaId } = request.params;
+
+            const motorista = await connection('motoristas')
+                .join('usuarios', 'usuarios.id', 'motoristas.usuario_id')
+                .where('motoristas.usuario_id', usuarioId)
+                .where('usuarios.tipo', 'MOTORISTA')
+                .where('usuarios.status', 'ATIVO')
+                .where('motoristas.status', 'APROVADO')
+                .select('motoristas.id')
+                .first();
+
+            if (!motorista) {
+                return response.status(403).json({
+                    error: 'Motorista não encontrado ou não aprovado.'
+                });
+            }
+
+            const recusada = await recusarOferta(
+                corridaId,
+                motorista.id
+            );
+
+            if (!recusada) {
+                return response.status(409).json({
+                    error: 'A oferta não existe, expirou ou já foi respondida.'
+                });
+            }
+
+            return response.json({
+                message: 'Oferta recusada. Buscando o próximo motorista.'
+            });
+        } catch (error) {
+            console.error('Erro ao recusar oferta:', error);
+
+            return response.status(500).json({
+                error: 'Erro ao recusar a oferta.'
             });
         }
     },
@@ -1368,51 +1367,125 @@ module.exports = {
             });
         }
     },
-
+        
     async cancelar(request, response) {
         try {
             const usuarioId = request.user.id;
+            const corridaId = request.params.id;
 
-            const corrida = await connection('corridas')
-            .where('id', request.params.id)
-            .where('cliente_id', usuarioId)
-            .whereIn('status', [
-                'SOLICITADA',
-                'ACEITA'
-            ])
-            .first();
+            const resultado = await connection.transaction(async trx => {
+                const corrida = await trx('corridas')
+                    .where('id', corridaId)
+                    .where('cliente_id', usuarioId)
+                    .forUpdate()
+                    .first();
 
-            if (!corrida) {
-            return response.status(400).json({
-                error:
-                'Corrida não encontrada ou não pode mais ser cancelada.'
+                if (
+                    !corrida ||
+                    !['SOLICITADA', 'ACEITA'].includes(corrida.status)
+                ) {
+                    return {
+                        erro: 'Corrida não encontrada ou não pode mais ser cancelada.'
+                    };
+                }
+
+                // Obtém as tentativas pendentes antes de encerrá-las.
+                const tentativasPendentes = await trx('tentativas_corrida')
+                    .where('corrida_id', corridaId)
+                    .where('status', 'PENDENTE')
+                    .select('motorista_id');
+
+                const motoristasIds = new Set(
+                    tentativasPendentes.map(t => String(t.motorista_id))
+                );
+
+                // Se já havia um motorista atribuído, ele também
+                // precisa receber o aviso de cancelamento.
+                if (corrida.motorista_id) {
+                    motoristasIds.add(String(corrida.motorista_id));
+                }
+
+                const quantidade = await trx('corridas')
+                    .where('id', corridaId)
+                    .where('cliente_id', usuarioId)
+                    .whereIn('status', ['SOLICITADA', 'ACEITA'])
+                    .update({
+                        status: 'CANCELADA',
+                        updated_at: trx.fn.now()
+                    });
+
+                if (!quantidade) {
+                    return {
+                        erro: 'A corrida já foi alterada e não pode ser cancelada.'
+                    };
+                }
+
+                // Encerra todas as ofertas ainda pendentes.
+                await trx('tentativas_corrida')
+                    .where('corrida_id', corridaId)
+                    .where('status', 'PENDENTE')
+                    .update({
+                        status: 'CANCELADA',
+                        data_resposta: trx.fn.now(),
+                        updated_at: trx.fn.now()
+                    });
+
+                const corridaAtualizada = await trx('corridas')
+                    .where('id', corridaId)
+                    .first();
+
+                let motoristas = [];
+
+                if (motoristasIds.size > 0) {
+                    motoristas = await trx('motoristas')
+                        .whereIn('id', [...motoristasIds])
+                        .select('id', 'usuario_id');
+                }
+
+                return {
+                    corrida: corridaAtualizada,
+                    motoristas
+                };
             });
+
+            if (resultado.erro) {
+                return response.status(409).json({
+                    error: resultado.erro
+                });
             }
 
-            await connection('corridas')
-            .where('id', corrida.id)
-            .update({
-                status: 'CANCELADA',
-                updated_at: connection.fn.now()
-            });
+            // Impede que temporizadores antigos avancem o despacho.
+            limparTemporizadoresCorrida(corridaId);
 
-            const corridaAtualizada =
-            await connection('corridas')
-                .where('id', corrida.id)
-                .first();
+            const io = obterIO();
+
+            // Notifica os motoristas que tinham uma oferta pendente
+            // e também o motorista já atribuído, caso exista.
+            for (const motorista of resultado.motoristas) {
+                io.to(`usuario:${motorista.usuario_id}`)
+                    .emit('corrida:cancelada', {
+                        corrida_id: corridaId,
+                        mensagem: 'O passageiro cancelou esta corrida.'
+                    });
+            }
+
+            // Confirma o cancelamento ao passageiro por Socket.IO.
+            io.to(`usuario:${usuarioId}`)
+                .emit('corrida:cancelada', {
+                    corrida: resultado.corrida,
+                    mensagem: 'Sua corrida foi cancelada.'
+                });
 
             return response.json({
-            corrida: corridaAtualizada
+                message: 'Corrida cancelada com sucesso.',
+                corrida: resultado.corrida
             });
 
         } catch (error) {
-            console.error(
-            'Erro ao cancelar corrida:',
-            error
-            );
+            console.error('Erro ao cancelar corrida:', error);
 
             return response.status(500).json({
-            error: 'Erro ao cancelar corrida.'
+                error: 'Erro ao cancelar corrida.'
             });
         }
     },
