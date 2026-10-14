@@ -1,13 +1,16 @@
 // Update with your config settings.
+require('dotenv/config');
+
 module.exports = {
 
   development: {
     client: '',
     connection: {
-      host : "travelinn.mysql.dbaas.com.br",
-      database: "travelinn",
-      user: "travelinn",
-      password: "Ent@0669"
+      host : process.env.DATABASE_HOST,
+      port: Number(process.env.DATABASE_PORT || 3306),
+      database: process.env.DATABASE_NAME,
+      user: process.env.DATABASE_USER,
+      password: process.env.DATABASE_PASSWORD,
     },
     migrations: {
       directory: ''
@@ -34,10 +37,11 @@ module.exports = {
   production: {
     client: 'mysql',
     connection: {
-      host : "travelinn.mysql.dbaas.com.br",
-      database: "travelinn",
-      user: "travelinn",
-      password: "Ent@0669"
+      host : process.env.DATABASE_HOST,
+      port: Number(process.env.DATABASE_PORT || 3306),
+      database: process.env.DATABASE_NAME,
+      user: process.env.DATABASE_USER,
+      password: process.env.DATABASE_PASSWORD,
     },
     
     pool: {
