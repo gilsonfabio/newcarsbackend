@@ -180,7 +180,7 @@ module.exports = {
                 // VERIFICAR CATEGORIA
                 // ==================================================
 
-                const categoria = await trx('categorias')
+                const categoria = await trx('categorias_veiculos')
                     .where('id', categoria_id)
                     .where('ativo', 1)
                     .first();
