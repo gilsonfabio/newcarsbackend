@@ -58,7 +58,7 @@ module.exports = {
 
         try {
 
-            const categorias = await connection('categorias')
+            const categorias = await connection('categorias_veiculos')
                 .where('ativo', 1)
                 .select(
                     'id',
