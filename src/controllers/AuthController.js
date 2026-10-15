@@ -480,9 +480,9 @@ module.exports = {
 
                         // Categoria
                         .leftJoin(
-                            'categorias',
+                            'categorias_veiculos',
                             'veiculos.categoria_id',
-                            'categorias.id'
+                            'categorias_veiculos.id'
                         )
 
                         .where(
@@ -525,8 +525,8 @@ module.exports = {
                             // CATEGORIA
                             // ------------------------------
 
-                            'categorias.id as categoria_id',
-                            'categorias.nome as categoria'
+                            'categorias_veiculos.id as categoria_id',
+                            'categorias_veiculos.nome as categoria'
 
                         )
 
