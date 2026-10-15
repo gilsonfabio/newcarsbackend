@@ -81,12 +81,12 @@ module.exports = {
             // ==========================================
 
             if (
-                motorista.usuario_status !== 'APROVADO'
+                motorista.usuario_status !== 'ATIVO'
             ) {
 
                 return response.status(403).json({
                     error:
-                        'Usuário não está aprovado.'
+                        'Usuário não está ativo.'
                 });
 
             }
@@ -97,7 +97,7 @@ module.exports = {
             //
             // PENDENTE   -> não pode ficar online
             // BLOQUEADO  -> não pode ficar online
-            // APROVADO   -> pode ficar online
+            // ATIVO      -> pode ficar online
             //
             // IMPORTANTE:
             // Essa validação só impede o ONLINE.
