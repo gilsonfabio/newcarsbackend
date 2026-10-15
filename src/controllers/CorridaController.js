@@ -609,6 +609,32 @@ module.exports = {
 
                 valor: null
             });
+            
+            // ==================================================
+            // DESPACHA A CORRIDA PARA UM MOTORISTA
+            // ==================================================
+
+            try {
+                const despacho = await despacharProximoMotorista(
+                    corridaId
+                );
+
+                console.log(
+                    'Resultado do despacho:',
+                    corridaId,
+                    despacho?.tipo
+                );
+            } catch (erroDespacho) {
+                // A corrida já foi gravada no banco.
+                // Não retornamos erro 500 por uma falha isolada
+                // no despacho, evitando que o cliente tente
+                // criar a mesma corrida novamente.
+                console.error(
+                    'Corrida criada, mas houve erro no despacho:',
+                    corridaId,
+                    erroDespacho
+                );
+            }
 
             // ==================================================
             // BUSCA CORRIDA CRIADA

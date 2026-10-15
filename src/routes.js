@@ -7,6 +7,7 @@ const CorridaController = require('./controllers/CorridaController');
 const MotoristaController = require('./controllers/MotoristaController');
 const VeiculoController = require('./controllers/VeiculoController');
 const AdminMotoristaController = require('./controllers/AdminMotoristaController');
+const PasswordController = require('./controllers/PasswordController');
 
 const auth = require('./middlewares/auth');
 const admin = require('./middlewares/admin');
@@ -132,6 +133,20 @@ routes.put(
     '/corridas/:id/recusar',
     auth,
     CorridaController.recusar
+);
+
+// ==========================================================
+// RECUPERAÇÃO DE SENHA
+// ==========================================================
+
+routes.post(
+    '/password/forgot',
+    PasswordController.forgot
+);
+
+routes.post(
+    '/password/reset',
+    PasswordController.reset
 );
 
 module.exports = routes;

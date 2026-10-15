@@ -1,4 +1,3 @@
-
 const connection = require('../database/connection');
 const { randomUUID } = require('crypto');
 const { obterIO } = require('../socket');

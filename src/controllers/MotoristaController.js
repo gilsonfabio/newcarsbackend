@@ -1,5 +1,9 @@
 const connection = require('../database/connection');
 
+const {
+    despacharProximoMotorista
+} = require('../services/DespachoCorridas');
+
 module.exports = {
 
     // ==========================================================
@@ -285,6 +289,38 @@ module.exports = {
                 .update(
                     dadosAtualizacao
                 );
+
+            // ==========================================================
+            // TENTA DISTRIBUIR CORRIDAS PENDENTES AO FICAR ONLINE
+            // ==========================================================
+
+            if (
+                online === true &&
+                motorista.status === 'APROVADO'
+            ) {
+                try {
+                    const corridasPendentes = await connection('corridas')
+                        .where('status', 'SOLICITADA')
+                        .select('id');
+
+                    for (const corrida of corridasPendentes) {
+                        try {
+                            await despacharProximoMotorista(corrida.id);
+                        } catch (erroDespacho) {
+                            console.error(
+                                'Erro ao redistribuir corrida:',
+                                corrida.id,
+                                erroDespacho
+                            );
+                        }
+                    }
+                } catch (erroBusca) {
+                    console.error(
+                        'Erro ao buscar corridas pendentes para distribuição:',
+                        erroBusca
+                    );
+                }
+            }
 
             // ==========================================
             // BUSCA MOTORISTA ATUALIZADO
