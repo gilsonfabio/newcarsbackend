@@ -378,6 +378,7 @@ module.exports = {
                 origem_longitude,
                 destino_latitude,
                 destino_longitude,
+                origem,
                 destino,
                 categoria_veiculo_id
             } = request.body;
@@ -390,6 +391,7 @@ module.exports = {
             console.log('origem_longitude:', origem_longitude);
             console.log('destino_latitude:', destino_latitude);
             console.log('destino_longitude:', destino_longitude);
+            console.log('origem:', origem);
             console.log('destino:', destino);
             console.log('categoria_veiculo_id:', categoria_veiculo_id);
             console.log('=================================');
@@ -587,6 +589,7 @@ module.exports = {
                 origem_latitude: origemLatitude,
                 origem_longitude: origemLongitude,
 
+                origem: origem.trim(),
                 destino: destino.trim(),
 
                 destino_latitude: destinoLatitude,
