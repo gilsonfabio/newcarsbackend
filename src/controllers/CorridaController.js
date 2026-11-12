@@ -329,7 +329,12 @@ module.exports = {
 
     async store(request, response) {
         try {
-            const { cotacao_id } = request.body;
+            const {
+                cotacao_id,
+                modalidade,
+                forma_pagamento
+            } = request.body;
+
             const clienteId = request.user.id;
 
             // Valida identificador da cotação
@@ -339,6 +344,41 @@ module.exports = {
             ) {
                 return response.status(400).json({
                     error: 'Identificador da cotação não informado.'
+                });
+            }
+
+            // Valida modalidade
+            const modalidadesPermitidas = [
+                'PRESENCIAL',
+                'ONLINE'
+            ];
+
+            if (!modalidadesPermitidas.includes(modalidade)) {
+                return response.status(400).json({
+                    error: 'Modalidade de pagamento inválida.'
+                });
+            }
+
+            // Valida forma de pagamento
+            const formasPermitidas = [
+                'DINHEIRO',
+                'PIX',
+                'CARTAO'
+            ];
+
+            if (!formasPermitidas.includes(forma_pagamento)) {
+                return response.status(400).json({
+                    error: 'Forma de pagamento inválida.'
+                });
+            }
+
+            // Dinheiro só pode ser presencial
+            if (
+                modalidade === 'ONLINE' &&
+                forma_pagamento === 'DINHEIRO'
+            ) {
+                return response.status(400).json({
+                    error: 'Pagamento em dinheiro só pode ser presencial.'
                 });
             }
 
@@ -355,7 +395,7 @@ module.exports = {
                 });
             }
 
-            // Cria corrida e consome a cotação na mesma transação
+            // Cria corrida, pagamento e consome cotação na mesma transação
             const resultado = await connection.transaction(async trx => {
 
                 // Bloqueia a cotação durante a operação
@@ -387,8 +427,12 @@ module.exports = {
                     };
                 }
 
-                // Gera identificador da corrida
+                // Gera identificadores
                 const corridaId = randomUUID();
+                const pagamentoId = randomUUID();
+
+                // Valor contratado na cotação
+                const valorContratado = cotacao.valor_estimado;
 
                 // Cria a corrida usando exclusivamente os dados da cotação
                 await trx('corridas').insert({
@@ -414,12 +458,37 @@ module.exports = {
                     duracao_estimada_segundos:
                         cotacao.duracao_estimada_segundos,
 
-                    valor_estimado:
-                        cotacao.valor_estimado,
+                    valor_estimado: valorContratado,
 
                     motorista_id: null,
                     status: 'SOLICITADA',
                     valor: null
+                });
+
+                // Cria o pagamento inicialmente pendente.
+                // A comissão será definida quando o motorista aceitar.
+                await trx('pagamentos_corridas').insert({
+                    id: pagamentoId,
+                    corrida_id: corridaId,
+
+                    modalidade,
+                    forma_pagamento,
+
+                    status: 'PENDENTE',
+
+                    valor_bruto: valorContratado,
+
+                    percentual_comissao: 0,
+                    valor_comissao: 0,
+
+                    // Temporariamente igual ao valor bruto.
+                    // Será atualizado com a comissão do motorista
+                    // quando ele aceitar a corrida.
+                    valor_liquido: valorContratado,
+
+                    chave_idempotencia: `corrida:${corridaId}`,
+
+                    observacao: 'Pagamento criado na solicitação da corrida.'
                 });
 
                 // Marca a cotação como utilizada
@@ -443,8 +512,13 @@ module.exports = {
                     .where('id', corridaId)
                     .first();
 
+                const pagamento = await trx('pagamentos_corridas')
+                    .where('id', pagamentoId)
+                    .first();
+
                 return {
-                    corrida
+                    corrida,
+                    pagamento
                 };
             });
 
@@ -461,6 +535,10 @@ module.exports = {
             console.log('Corrida:', corridaId);
             console.log('Cotação:', cotacao_id);
             console.log('Valor:', resultado.corrida.valor_estimado);
+            console.log('Pagamento:', resultado.pagamento.id);
+            console.log('Modalidade:', modalidade);
+            console.log('Forma:', forma_pagamento);
+            console.log('Status pagamento:', resultado.pagamento.status);
             console.log('=================================');
 
             // Despacha a corrida para um motorista
@@ -475,7 +553,7 @@ module.exports = {
                     despacho?.tipo
                 );
             } catch (erroDespacho) {
-                // A corrida já está gravada.
+                // A corrida e o pagamento já estão gravados.
                 // Uma falha no despacho não deve provocar duplicação.
                 console.error(
                     'Corrida criada, mas houve erro no despacho:',
@@ -484,14 +562,19 @@ module.exports = {
                 );
             }
 
-            // Busca corrida atualizada
+            // Busca corrida e pagamento atualizados
             const corrida = await connection('corridas')
                 .where('id', corridaId)
                 .first();
 
+            const pagamento = await connection('pagamentos_corridas')
+                .where('corrida_id', corridaId)
+                .first();
+
             return response.status(201).json({
                 message: 'Corrida solicitada com sucesso.',
-                corrida
+                corrida,
+                pagamento
             });
 
         } catch (error) {
@@ -574,13 +657,30 @@ module.exports = {
             const usuarioId = request.user.id;
             const { id: corridaId } = request.params;
 
+            // Localiza motorista e sua graduação atual
             const motorista = await connection('motoristas')
-                .join('usuarios', 'usuarios.id', 'motoristas.usuario_id')
+                .join(
+                    'usuarios',
+                    'usuarios.id',
+                    'motoristas.usuario_id'
+                )
+                .leftJoin(
+                    'graduacoes_motoristas as gm',
+                    'gm.id',
+                    'motoristas.graduacao_id'
+                )
                 .where('motoristas.usuario_id', usuarioId)
                 .where('usuarios.tipo', 'MOTORISTA')
                 .where('usuarios.status', 'ATIVO')
                 .where('motoristas.status', 'APROVADO')
-                .select('motoristas.id', 'motoristas.online')
+                .select(
+                    'motoristas.id',
+                    'motoristas.online',
+                    'motoristas.graduacao_id',
+                    'motoristas.percentual_comissao',
+                    'gm.nome as graduacao_nome',
+                    'gm.percentual_comissao as percentual_graduacao'
+                )
                 .first();
 
             if (!motorista) {
@@ -595,16 +695,41 @@ module.exports = {
                 });
             }
 
+            // Obtém a comissão individual do motorista.
+            // Se estiver nula, utiliza o percentual da graduação.
+            const percentualComissao = Number(
+                motorista.percentual_comissao ??
+                motorista.percentual_graduacao
+            );
+
+            if (
+                !motorista.graduacao_id ||
+                !motorista.graduacao_nome ||
+                !Number.isFinite(percentualComissao) ||
+                percentualComissao < 0 ||
+                percentualComissao > 100
+            ) {
+                return response.status(409).json({
+                    error: 'A graduação ou comissão do motorista não está configurada corretamente.'
+                });
+            }
+
             const resultado = await connection.transaction(async trx => {
+
+                // Bloqueia a corrida durante a aceitação
                 const corrida = await trx('corridas')
                     .where('id', corridaId)
                     .forUpdate()
                     .first();
 
                 if (!corrida || corrida.status !== 'SOLICITADA') {
-                    return { erro: 'Esta corrida não está mais disponível.' };
+                    return {
+                        erro: 'Esta corrida não está mais disponível.',
+                        status: 409
+                    };
                 }
 
+                // Confirma que a oferta foi destinada ao motorista
                 const tentativa = await trx('tentativas_corrida')
                     .where('corrida_id', corridaId)
                     .where('motorista_id', motorista.id)
@@ -615,10 +740,12 @@ module.exports = {
 
                 if (!tentativa) {
                     return {
-                        erro: 'Esta oferta expirou ou não foi destinada a você.'
+                        erro: 'Esta oferta expirou ou não foi destinada a você.',
+                        status: 409
                     };
                 }
 
+                // Verifica se o motorista já possui corrida ativa
                 const corridaAtiva = await trx('corridas')
                     .where('motorista_id', motorista.id)
                     .whereIn('status', ['ACEITA', 'EM_ANDAMENTO'])
@@ -626,11 +753,12 @@ module.exports = {
 
                 if (corridaAtiva) {
                     return {
-                        erro: 'Você já possui uma corrida aceita ou em andamento.'
+                        erro: 'Você já possui uma corrida aceita ou em andamento.',
+                        status: 409
                     };
                 }
 
-                // Confere novamente a categoria do veículo ativo.
+                // Confere novamente a categoria do veículo ativo
                 const possuiVeiculo = await trx('veiculos')
                     .where('motorista_id', motorista.id)
                     .where('categoria_id', corrida.categoria_veiculo_id)
@@ -639,10 +767,78 @@ module.exports = {
 
                 if (!possuiVeiculo) {
                     return {
-                        erro: 'Você não possui veículo ativo nesta categoria.'
+                        erro: 'Você não possui veículo ativo nesta categoria.',
+                        status: 409
                     };
                 }
 
+                // Localiza e bloqueia o pagamento da corrida
+                const pagamento = await trx('pagamentos_corridas')
+                    .where('corrida_id', corridaId)
+                    .forUpdate()
+                    .first();
+
+                if (!pagamento) {
+                    return {
+                        erro: 'Pagamento não encontrado para esta corrida.',
+                        status: 409
+                    };
+                }
+
+                // Impede reaplicação da comissão
+                if (pagamento.graduacao_id) {
+                    return {
+                        erro: 'A comissão desta corrida já foi registrada.',
+                        status: 409
+                    };
+                }
+
+                // Calcula comissão em centavos para evitar
+                // imprecisão de arredondamento com valores decimais.
+                const valorBrutoCentavos = Math.round(
+                    Number(pagamento.valor_bruto) * 100
+                );
+
+                if (
+                    !Number.isSafeInteger(valorBrutoCentavos) ||
+                    valorBrutoCentavos < 0
+                ) {
+                    throw new Error(
+                        'Valor bruto inválido no pagamento da corrida.'
+                    );
+                }
+
+                const valorComissaoCentavos = Math.round(
+                    valorBrutoCentavos * percentualComissao / 100
+                );
+
+                const valorLiquidoCentavos =
+                    valorBrutoCentavos - valorComissaoCentavos;
+
+                const valorComissao = (
+                    valorComissaoCentavos / 100
+                ).toFixed(2);
+
+                const valorLiquido = (
+                    valorLiquidoCentavos / 100
+                ).toFixed(2);
+
+                // Registra a fotografia da graduação e comissão.
+                // O pagamento permanece PENDENTE.
+                await trx('pagamentos_corridas')
+                    .where('id', pagamento.id)
+                    .update({
+                        graduacao_id: motorista.graduacao_id,
+                        graduacao_nome: motorista.graduacao_nome,
+
+                        percentual_comissao: percentualComissao,
+                        valor_comissao: valorComissao,
+                        valor_liquido: valorLiquido,
+
+                        updated_at: trx.fn.now()
+                    });
+
+                // Atualiza a corrida
                 await trx('corridas')
                     .where('id', corridaId)
                     .where('status', 'SOLICITADA')
@@ -652,6 +848,7 @@ module.exports = {
                         updated_at: trx.fn.now()
                     });
 
+                // Marca a tentativa como aceita
                 await trx('tentativas_corrida')
                     .where('id', tentativa.id)
                     .update({
@@ -660,7 +857,7 @@ module.exports = {
                         updated_at: trx.fn.now()
                     });
 
-                // Cancela qualquer outra oferta pendente para esta corrida.
+                // Cancela outras ofertas pendentes desta corrida
                 await trx('tentativas_corrida')
                     .where('corrida_id', corridaId)
                     .where('status', 'PENDENTE')
@@ -676,12 +873,15 @@ module.exports = {
 
                 return {
                     corrida: corridaAtualizada,
-                    tentativaId: tentativa.id
+                    tentativaId: tentativa.id,
+                    percentualComissao,
+                    valorComissao,
+                    valorLiquido
                 };
             });
 
             if (resultado.erro) {
-                return response.status(409).json({
+                return response.status(resultado.status).json({
                     error: resultado.erro
                 });
             }
@@ -689,6 +889,17 @@ module.exports = {
             // A corrida já foi aceita no banco.
             // Encerra todos os temporizadores associados a ela.
             limparTemporizadoresCorrida(corridaId);
+
+            console.log('=================================');
+            console.log('CORRIDA ACEITA - COMISSÃO REGISTRADA');
+            console.log('Corrida:', corridaId);
+            console.log('Motorista:', motorista.id);
+            console.log('Graduação:', motorista.graduacao_nome);
+            console.log('Comissão:', resultado.percentualComissao + '%');
+            console.log('Valor comissão:', resultado.valorComissao);
+            console.log('Valor líquido:', resultado.valorLiquido);
+            console.log('Pagamento continua PENDENTE');
+            console.log('=================================');
 
             const io = obterIO();
 
@@ -706,6 +917,7 @@ module.exports = {
                 message: 'Corrida aceita com sucesso.',
                 corrida: resultado.corrida
             });
+
         } catch (error) {
             console.error('Erro ao aceitar corrida:', error);
 
