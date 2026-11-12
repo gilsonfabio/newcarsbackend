@@ -162,7 +162,7 @@ function coordenadasValidas(latitude, longitude) {
 }
 
 module.exports = {
-
+    
     async estimativa(request, response) {
         try {
             const {
@@ -170,364 +170,63 @@ module.exports = {
                 origem_longitude,
                 destino_latitude,
                 destino_longitude,
-                destino,
+                origem,
+                destino
             } = request.body;
-
-            console.log('=================================');
-            console.log('ESTIMATIVA - DADOS RECEBIDOS');
-            console.log('origem_latitude:', origem_latitude);
-            console.log('origem_longitude:', origem_longitude);
-            console.log('destino_latitude:', destino_latitude);
-            console.log('destino_longitude:', destino_longitude);
-            console.log('destino:', destino);
-            console.log('=================================');
 
             const origemLatitude = Number(origem_latitude);
             const origemLongitude = Number(origem_longitude);
             const destinoLatitude = Number(destino_latitude);
             const destinoLongitude = Number(destino_longitude);
 
-            /*
-            * Validação das coordenadas.
-            */
-            const coordenadasValidas = (
-                latitude,
-                longitude
-            ) => {
-                return (
-                    Number.isFinite(latitude) &&
-                    Number.isFinite(longitude) &&
-                    latitude >= -90 &&
-                    latitude <= 90 &&
-                    longitude >= -180 &&
-                    longitude <= 180
-                );
-            };
-
+            // Valida coordenadas
             if (
-                !coordenadasValidas(
-                    origemLatitude,
-                    origemLongitude
-                ) ||
-                !coordenadasValidas(
-                    destinoLatitude,
-                    destinoLongitude
-                )
+                !coordenadasValidas(origemLatitude, origemLongitude) ||
+                !coordenadasValidas(destinoLatitude, destinoLongitude)
             ) {
-                console.log(
-                    'COORDENADAS INVÁLIDAS'
-                );
-
                 return response.status(400).json({
-                    error:
-                        'Informe uma origem e um destino válidos.',
+                    error: 'Informe uma origem e um destino válidos.'
                 });
             }
 
+            // Valida endereço de destino
             if (
                 !destino ||
                 typeof destino !== 'string' ||
                 !destino.trim()
             ) {
                 return response.status(400).json({
-                    error:
-                        'Informe o endereço de destino.',
+                    error: 'Informe o endereço de destino.'
                 });
             }
 
-            /*
-            * Verifica se o usuário autenticado
-            * é um cliente ativo.
-            */
-            const cliente = await connection(
-                'usuarios'
-            )
+            // Verifica cliente autenticado
+            const cliente = await connection('usuarios')
                 .where({
                     id: request.user.id,
                     tipo: 'CLIENTE',
-                    status: 'ATIVO',
+                    status: 'ATIVO'
                 })
                 .first();
 
             if (!cliente) {
                 return response.status(403).json({
-                    error:
-                        'Usuário não autorizado para solicitar corridas.',
+                    error: 'Usuário não autorizado para solicitar corridas.'
                 });
             }
 
-            /*
-            * Busca categorias ativas.
-            */
-            const categorias = await connection(
-                'categorias_veiculos'
-            )
+            // Busca categorias ativas
+            const categorias = await connection('categorias_veiculos')
                 .where('ativo', 1)
                 .orderBy('preco_base', 'asc');
 
             if (!categorias.length) {
                 return response.status(404).json({
-                    error:
-                        'Nenhuma categoria de veículo está disponível.',
+                    error: 'Nenhuma categoria de veículo está disponível.'
                 });
             }
 
-            /*
-            * Calcula a rota usando Google Routes API.
-            */
-            const rota = await calcularRota(
-                {
-                    latitude: origemLatitude,
-                    longitude: origemLongitude,
-                },
-                {
-                    latitude: destinoLatitude,
-                    longitude: destinoLongitude,
-                }
-            );
-
-            /*
-            * Calcula o preço para cada categoria.
-            */
-            const opcoes = categorias.map(
-                categoria => ({
-                    categoria_veiculo_id:
-                        categoria.id,
-
-                    nome: categoria.nome,
-
-                    descricao:
-                        categoria.descricao,
-
-                    capacidade_passageiros:
-                        categoria.capacidade_passageiros,
-
-                    distancia_metros:
-                        rota.distancia_metros,
-
-                    duracao_estimada_segundos:
-                        rota.duracao_estimada_segundos,
-
-                    valor_estimado:
-                        calcularPreco(
-                            categoria,
-                            rota.distancia_metros,
-                            rota.duracao_estimada_segundos
-                        ),
-                })
-            );
-
-            console.log(
-                '================================='
-            );
-
-            console.log(
-                'ESTIMATIVA CALCULADA'
-            );
-
-            console.log(
-                'Distância:',
-                rota.distancia_metros
-            );
-
-            console.log(
-                'Duração:',
-                rota.duracao_estimada_segundos
-            );
-
-            console.log(
-                'Opções:',
-                opcoes
-            );
-
-            console.log(
-                '================================='
-            );
-
-            return response.json({
-                distancia_metros:
-                    rota.distancia_metros,
-
-                duracao_estimada_segundos:
-                    rota.duracao_estimada_segundos,
-
-                opcoes,
-            });
-
-        } catch (error) {
-            console.error(
-                'Erro ao calcular estimativa:',
-                error
-            );
-
-            return response.status(500).json({
-                error:
-                    'Não foi possível calcular a estimativa da corrida.',
-            });
-        }
-    },
-
-    // ==========================================================
-    // SOLICITAR CORRIDA - CLIENTE
-    // ==========================================================
-
-    async store(request, response) {
-        try {
-            const {
-                origem_latitude,
-                origem_longitude,
-                destino_latitude,
-                destino_longitude,
-                origem,
-                destino,
-                categoria_veiculo_id
-            } = request.body;
-
-            const clienteId = request.user.id;
-
-            console.log('=================================');
-            console.log('SOLICITAR CORRIDA - DADOS RECEBIDOS');
-            console.log('origem_latitude:', origem_latitude);
-            console.log('origem_longitude:', origem_longitude);
-            console.log('destino_latitude:', destino_latitude);
-            console.log('destino_longitude:', destino_longitude);
-            console.log('origem:', origem);
-            console.log('destino:', destino);
-            console.log('categoria_veiculo_id:', categoria_veiculo_id);
-            console.log('=================================');
-
-            // ==================================================
-            // CONVERTE COORDENADAS PARA NUMBER
-            // ==================================================
-
-            const origemLatitude = Number(origem_latitude);
-            const origemLongitude = Number(origem_longitude);
-            const destinoLatitude = Number(destino_latitude);
-            const destinoLongitude = Number(destino_longitude);
-
-            // ==================================================
-            // VALIDA ORIGEM
-            // ==================================================
-
-            if (
-                !coordenadasValidas(
-                    origemLatitude,
-                    origemLongitude
-                )
-            ) {
-                console.log(
-                    'ORIGEM INVÁLIDA:',
-                    origemLatitude,
-                    origemLongitude
-                );
-
-                return response.status(400).json({
-                    error:
-                        'Informe uma origem com coordenadas válidas.'
-                });
-            }
-
-            // ==================================================
-            // VALIDA DESTINO
-            // ==================================================
-
-            if (
-                !coordenadasValidas(
-                    destinoLatitude,
-                    destinoLongitude
-                )
-            ) {
-                console.log(
-                    'DESTINO INVÁLIDO:',
-                    destinoLatitude,
-                    destinoLongitude
-                );
-
-                return response.status(400).json({
-                    error:
-                        'Informe um destino com coordenadas válidas.'
-                });
-            }
-
-            // ==================================================
-            // VALIDA ENDEREÇO
-            // ==================================================
-
-            if (
-                !destino ||
-                typeof destino !== 'string' ||
-                !destino.trim()
-            ) {
-                return response.status(400).json({
-                    error:
-                        'Informe o endereço de destino.'
-                });
-            }
-
-            // ==================================================
-            // VALIDA CATEGORIA
-            // ==================================================
-
-            if (
-                typeof categoria_veiculo_id !== 'string' ||
-                !categoria_veiculo_id.trim()
-            ) {
-                return response.status(400).json({
-                    error:
-                        'Selecione uma categoria de veículo.'
-                });
-            }
-
-            // ==================================================
-            // VERIFICA CLIENTE
-            // ==================================================
-
-            const cliente = await connection('usuarios')
-                .where('id', clienteId)
-                .where('tipo', 'CLIENTE')
-                .where('status', 'ATIVO')
-                .first();
-
-            if (!cliente) {
-                return response.status(403).json({
-                    error:
-                        'Usuário não autorizado a solicitar corridas.'
-                });
-            }
-
-            // ==================================================
-            // BUSCA CATEGORIA
-            // ==================================================
-
-            const categoria = await connection(
-                'categorias_veiculos'
-            )
-                .where(
-                    'id',
-                    categoria_veiculo_id
-                )
-                .where(
-                    'ativo',
-                    1
-                )
-                .first();
-
-            if (!categoria) {
-                return response.status(400).json({
-                    error:
-                        'A categoria selecionada não existe ou está inativa.'
-                });
-            }
-
-            // ==================================================
-            // CALCULA NOVAMENTE A ROTA
-            // ==================================================
-            //
-            // IMPORTANTE:
-            // Não confiamos nos valores calculados pelo aplicativo.
-            // O backend calcula novamente usando a Google Routes API.
-            //
-
+            // Calcula a rota uma única vez
             const rota = await calcularRota(
                 {
                     latitude: origemLatitude,
@@ -539,84 +238,232 @@ module.exports = {
                 }
             );
 
-            // ==================================================
-            // CALCULA NOVAMENTE O PREÇO
-            // ==================================================
+            // Cria uma cotação independente para cada categoria
+            const opcoes = await connection.transaction(async trx => {
+                const resultado = [];
 
-            const valorEstimado = calcularPreco(
-                categoria,
-                rota.distancia_metros,
-                rota.duracao_estimada_segundos
-            );
+                for (const categoria of categorias) {
+                    const valorEstimado = calcularPreco(
+                        categoria,
+                        rota.distancia_metros,
+                        rota.duracao_estimada_segundos
+                    );
+
+                    const cotacaoId = randomUUID();
+
+                    await trx('cotacoes_corridas').insert({
+                        id: cotacaoId,
+                        cliente_id: request.user.id,
+                        categoria_veiculo_id: categoria.id,
+
+                        origem_latitude: origemLatitude,
+                        origem_longitude: origemLongitude,
+
+                        destino_latitude: destinoLatitude,
+                        destino_longitude: destinoLongitude,
+
+                        origem: origem ? origem.trim() : null,
+                        destino: destino.trim(),
+
+                        distancia_metros: rota.distancia_metros,
+                        duracao_estimada_segundos:
+                            rota.duracao_estimada_segundos,
+
+                        valor_estimado: valorEstimado,
+
+                        expira_em: trx.raw(
+                            'DATE_ADD(NOW(), INTERVAL 10 MINUTE)'
+                        )
+                    });
+
+                    resultado.push({
+                        cotacao_id: cotacaoId,
+
+                        categoria_veiculo_id: categoria.id,
+                        nome: categoria.nome,
+                        descricao: categoria.descricao,
+
+                        capacidade_passageiros:
+                            categoria.capacidade_passageiros,
+
+                        distancia_metros: rota.distancia_metros,
+                        duracao_estimada_segundos:
+                            rota.duracao_estimada_segundos,
+
+                        valor_estimado: valorEstimado,
+
+                        validade_minutos: 10
+                    });
+                }
+
+                return resultado;
+            });
 
             console.log('=================================');
-            console.log('CORRIDA - VALORES CALCULADOS PELO SERVIDOR');
-            console.log(
-                'Distância:',
-                rota.distancia_metros,
-                'metros'
-            );
-            console.log(
-                'Duração:',
-                rota.duracao_estimada_segundos,
-                'segundos'
-            );
-            console.log(
-                'Categoria:',
-                categoria.nome
-            );
-            console.log(
-                'Valor estimado:',
-                valorEstimado
-            );
+            console.log('COTAÇÕES DE CORRIDA CRIADAS');
+            console.log('Cliente:', request.user.id);
+            console.log('Distância:', rota.distancia_metros);
+            console.log('Duração:', rota.duracao_estimada_segundos);
+            console.log('Opções:', opcoes);
             console.log('=================================');
 
-            // ==================================================
-            // GERA ID DA CORRIDA
-            // ==================================================
-
-            const corridaId = randomUUID();
-
-            // ==================================================
-            // CRIA CORRIDA
-            // ==================================================
-
-            await connection('corridas').insert({
-                id: corridaId,
-
-                cliente_id: clienteId,
-
-                origem_latitude: origemLatitude,
-                origem_longitude: origemLongitude,
-
-                origem: origem.trim(),
-                destino: destino.trim(),
-
-                destino_latitude: destinoLatitude,
-                destino_longitude: destinoLongitude,
-
-                categoria_veiculo_id: categoria.id,
-
-                distancia_metros:
-                    rota.distancia_metros,
-
+            return response.json({
+                distancia_metros: rota.distancia_metros,
                 duracao_estimada_segundos:
                     rota.duracao_estimada_segundos,
-
-                valor_estimado:
-                    valorEstimado,
-
-                motorista_id: null,
-
-                status: 'SOLICITADA',
-
-                valor: null
+                opcoes
             });
-            
-            // ==================================================
-            // DESPACHA A CORRIDA PARA UM MOTORISTA
-            // ==================================================
 
+        } catch (error) {
+            console.error('Erro ao calcular estimativa:', error);
+
+            return response.status(500).json({
+                error: 'Não foi possível calcular a estimativa da corrida.'
+            });
+        }
+    },
+
+    // ==========================================================
+    // SOLICITAR CORRIDA - CLIENTE
+    // ==========================================================
+
+    async store(request, response) {
+        try {
+            const { cotacao_id } = request.body;
+            const clienteId = request.user.id;
+
+            // Valida identificador da cotação
+            if (
+                typeof cotacao_id !== 'string' ||
+                !cotacao_id.trim()
+            ) {
+                return response.status(400).json({
+                    error: 'Identificador da cotação não informado.'
+                });
+            }
+
+            // Confirma cliente ativo
+            const cliente = await connection('usuarios')
+                .where('id', clienteId)
+                .where('tipo', 'CLIENTE')
+                .where('status', 'ATIVO')
+                .first();
+
+            if (!cliente) {
+                return response.status(403).json({
+                    error: 'Usuário não autorizado a solicitar corridas.'
+                });
+            }
+
+            // Cria corrida e consome a cotação na mesma transação
+            const resultado = await connection.transaction(async trx => {
+
+                // Bloqueia a cotação durante a operação
+                const cotacao = await trx('cotacoes_corridas')
+                    .where('id', cotacao_id)
+                    .where('cliente_id', clienteId)
+                    .whereNull('utilizada_em')
+                    .where('expira_em', '>', trx.fn.now())
+                    .forUpdate()
+                    .first();
+
+                if (!cotacao) {
+                    return {
+                        erro: 'Cotação não encontrada, expirada ou já utilizada.',
+                        status: 409
+                    };
+                }
+
+                // Confirma que a categoria ainda está ativa
+                const categoria = await trx('categorias_veiculos')
+                    .where('id', cotacao.categoria_veiculo_id)
+                    .where('ativo', 1)
+                    .first();
+
+                if (!categoria) {
+                    return {
+                        erro: 'A categoria desta cotação não está mais disponível.',
+                        status: 409
+                    };
+                }
+
+                // Gera identificador da corrida
+                const corridaId = randomUUID();
+
+                // Cria a corrida usando exclusivamente os dados da cotação
+                await trx('corridas').insert({
+                    id: corridaId,
+
+                    cliente_id: clienteId,
+
+                    origem_latitude: cotacao.origem_latitude,
+                    origem_longitude: cotacao.origem_longitude,
+
+                    destino_latitude: cotacao.destino_latitude,
+                    destino_longitude: cotacao.destino_longitude,
+
+                    origem: cotacao.origem,
+                    destino: cotacao.destino,
+
+                    categoria_veiculo_id:
+                        cotacao.categoria_veiculo_id,
+
+                    distancia_metros:
+                        cotacao.distancia_metros,
+
+                    duracao_estimada_segundos:
+                        cotacao.duracao_estimada_segundos,
+
+                    valor_estimado:
+                        cotacao.valor_estimado,
+
+                    motorista_id: null,
+                    status: 'SOLICITADA',
+                    valor: null
+                });
+
+                // Marca a cotação como utilizada
+                const quantidadeAtualizada = await trx('cotacoes_corridas')
+                    .where('id', cotacao.id)
+                    .where('cliente_id', clienteId)
+                    .whereNull('utilizada_em')
+                    .update({
+                        utilizada_em: trx.fn.now(),
+                        corrida_id: corridaId,
+                        updated_at: trx.fn.now()
+                    });
+
+                if (quantidadeAtualizada !== 1) {
+                    throw new Error(
+                        'Não foi possível confirmar o consumo da cotação.'
+                    );
+                }
+
+                const corrida = await trx('corridas')
+                    .where('id', corridaId)
+                    .first();
+
+                return {
+                    corrida
+                };
+            });
+
+            if (resultado.erro) {
+                return response.status(resultado.status).json({
+                    error: resultado.erro
+                });
+            }
+
+            const corridaId = resultado.corrida.id;
+
+            console.log('=================================');
+            console.log('CORRIDA CRIADA COM PREÇO CONTRATADO');
+            console.log('Corrida:', corridaId);
+            console.log('Cotação:', cotacao_id);
+            console.log('Valor:', resultado.corrida.valor_estimado);
+            console.log('=================================');
+
+            // Despacha a corrida para um motorista
             try {
                 const despacho = await despacharProximoMotorista(
                     corridaId
@@ -628,10 +475,8 @@ module.exports = {
                     despacho?.tipo
                 );
             } catch (erroDespacho) {
-                // A corrida já foi gravada no banco.
-                // Não retornamos erro 500 por uma falha isolada
-                // no despacho, evitando que o cliente tente
-                // criar a mesma corrida novamente.
+                // A corrida já está gravada.
+                // Uma falha no despacho não deve provocar duplicação.
                 console.error(
                     'Corrida criada, mas houve erro no despacho:',
                     corridaId,
@@ -639,40 +484,21 @@ module.exports = {
                 );
             }
 
-            // ==================================================
-            // BUSCA CORRIDA CRIADA
-            // ==================================================
-
-            const corrida = await connection(
-                'corridas'
-            )
-                .where(
-                    'id',
-                    corridaId
-                )
+            // Busca corrida atualizada
+            const corrida = await connection('corridas')
+                .where('id', corridaId)
                 .first();
 
-            // ==================================================
-            // RESPOSTA
-            // ==================================================
-
             return response.status(201).json({
-                message:
-                    'Corrida solicitada com sucesso.',
-
+                message: 'Corrida solicitada com sucesso.',
                 corrida
             });
 
         } catch (error) {
-
-            console.error(
-                'Erro ao solicitar corrida:',
-                error
-            );
+            console.error('Erro ao solicitar corrida:', error);
 
             return response.status(500).json({
-                error:
-                    'Erro ao solicitar corrida.'
+                error: 'Erro ao solicitar corrida.'
             });
         }
     },
@@ -1045,10 +871,7 @@ module.exports = {
             const usuarioId = request.user.id;
             const { id } = request.params;
 
-            // ==========================================
             // CONFIRMA MOTORISTA
-            // ==========================================
-
             const motorista = await connection('motoristas')
                 .join(
                     'usuarios',
@@ -1058,69 +881,66 @@ module.exports = {
                 .where('motoristas.usuario_id', usuarioId)
                 .where('usuarios.tipo', 'MOTORISTA')
                 .where('usuarios.status', 'ATIVO')
-                .select(
-                    'motoristas.id'
-                )
+                .select('motoristas.id')
                 .first();
 
             if (!motorista) {
-
                 return response.status(403).json({
                     error: 'Cadastro de motorista não encontrado ou usuário não autorizado.'
                 });
-
             }
 
-            // ==========================================
-            // INICIA TRANSAÇÃO
-            // ==========================================
+            // FINALIZA CORRIDA EM TRANSAÇÃO
+            const corrida = await connection.transaction(async (trx) => {
 
-            const corrida = await connection.transaction(
-                async (trx) => {
+                // Busca e bloqueia a corrida
+                const corridaAtual = await trx('corridas')
+                    .where('id', id)
+                    .where('motorista_id', motorista.id)
+                    .forUpdate()
+                    .first();
 
-                    /*
-                    * Só permite finalizar uma corrida que:
-                    *
-                    * 1. Pertence ao motorista logado
-                    * 2. Está EM_ANDAMENTO
-                    */
-
-                    const quantidade = await trx('corridas')
-                        .where('id', id)
-                        .where('motorista_id', motorista.id)
-                        .where('status', 'EM_ANDAMENTO')
-                        .update({
-                            status: 'FINALIZADA'
-                        });
-
-                    if (quantidade === 0) {
-
-                        return null;
-
-                    }
-
-                    return await trx('corridas')
-                        .where('id', id)
-                        .first();
-
+                if (
+                    !corridaAtual ||
+                    corridaAtual.status !== 'EM_ANDAMENTO'
+                ) {
+                    return null;
                 }
-            );
 
-            // ==========================================
-            // CORRIDA NÃO PODE SER FINALIZADA
-            // ==========================================
+                // O preço final é exatamente o preço contratado
+                const valorContratado = corridaAtual.valor_estimado;
+
+                if (
+                    valorContratado === null ||
+                    !Number.isFinite(Number(valorContratado))
+                ) {
+                    throw new Error(
+                        'A corrida não possui um valor contratado válido.'
+                    );
+                }
+
+                // Atualiza a corrida
+                await trx('corridas')
+                    .where('id', id)
+                    .where('motorista_id', motorista.id)
+                    .where('status', 'EM_ANDAMENTO')
+                    .update({
+                        status: 'FINALIZADA',
+                        valor_final: valorContratado,
+                        updated_at: trx.fn.now()
+                    });
+
+                // Retorna os dados atualizados
+                return await trx('corridas')
+                    .where('id', id)
+                    .first();
+            });
 
             if (!corrida) {
-
                 return response.status(409).json({
                     error: 'Esta corrida não pode ser finalizada. Verifique se ela pertence a você e está em andamento.'
                 });
-
             }
-
-            // ==========================================
-            // RESPOSTA
-            // ==========================================
 
             return response.json({
                 message: 'Corrida finalizada com sucesso.',
@@ -1128,7 +948,6 @@ module.exports = {
             });
 
         } catch (error) {
-
             console.error(
                 'Erro ao finalizar corrida:',
                 error
@@ -1137,9 +956,7 @@ module.exports = {
             return response.status(500).json({
                 error: 'Erro ao finalizar corrida.'
             });
-
         }
-
     },
 
     // ==========================================================
