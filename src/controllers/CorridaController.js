@@ -793,6 +793,14 @@ module.exports = {
                     };
                 }
 
+                // Só permite aplicar comissão em pagamento pendente
+                if (pagamento.status !== 'PENDENTE') {
+                    return {
+                        erro: 'O pagamento não está pendente e não pode receber comissão.',
+                        status: 409
+                    };
+                }
+
                 // Calcula comissão em centavos para evitar
                 // imprecisão de arredondamento com valores decimais.
                 const valorBrutoCentavos = Math.round(
@@ -1172,10 +1180,159 @@ module.exports = {
     },
 
     // ==========================================================
+    // MOTORISTA CONFIRMA RECEBIMENTO DO PAGAMENTO PRESENCIAL
+    // ==========================================================
+
+    async confirmarPagamento(request, response) {
+        try {
+            const usuarioId = request.user.id;
+            const { id: corridaId } = request.params;
+
+            // Localiza o motorista autenticado
+            const motorista = await connection('motoristas')
+                .join(
+                    'usuarios',
+                    'usuarios.id',
+                    'motoristas.usuario_id'
+                )
+                .where('motoristas.usuario_id', usuarioId)
+                .where('usuarios.tipo', 'MOTORISTA')
+                .where('usuarios.status', 'ATIVO')
+                .where('motoristas.status', 'APROVADO')
+                .select('motoristas.id')
+                .first();
+
+            if (!motorista) {
+                return response.status(403).json({
+                    error: 'Motorista não encontrado ou não autorizado.'
+                });
+            }
+
+            const resultado = await connection.transaction(async trx => {
+
+                // Bloqueia a corrida
+                const corrida = await trx('corridas')
+                    .where('id', corridaId)
+                    .forUpdate()
+                    .first();
+
+                if (!corrida) {
+                    return {
+                        erro: 'Corrida não encontrada.',
+                        status: 404
+                    };
+                }
+
+                // Confirma que a corrida pertence ao motorista
+                if (corrida.motorista_id !== motorista.id) {
+                    return {
+                        erro: 'Esta corrida não pertence a você.',
+                        status: 403
+                    };
+                }
+
+                // O pagamento só pode ser confirmado
+                // depois da finalização da corrida
+                if (corrida.status !== 'FINALIZADA') {
+                    return {
+                        erro: 'A corrida precisa estar finalizada para confirmar o pagamento.',
+                        status: 409
+                    };
+                }
+
+                // Bloqueia o pagamento
+                const pagamento = await trx('pagamentos_corridas')
+                    .where('corrida_id', corridaId)
+                    .forUpdate()
+                    .first();
+
+                if (!pagamento) {
+                    return {
+                        erro: 'Pagamento não encontrado para esta corrida.',
+                        status: 404
+                    };
+                }
+
+                // Motorista não confirma pagamento online
+                if (pagamento.modalidade !== 'PRESENCIAL') {
+                    return {
+                        erro: 'Pagamentos online devem ser confirmados exclusivamente pelo gateway.',
+                        status: 403
+                    };
+                }
+
+                // Impede confirmação duplicada
+                if (pagamento.status !== 'PENDENTE') {
+                    return {
+                        erro: 'Este pagamento não está pendente ou já foi processado.',
+                        status: 409
+                    };
+                }
+
+                // Confirma o recebimento
+                const quantidadeAtualizada = await trx('pagamentos_corridas')
+                    .where('id', pagamento.id)
+                    .where('status', 'PENDENTE')
+                    .update({
+                        status: 'APROVADO',
+                        confirmado_em: trx.fn.now(),
+                        confirmado_por: usuarioId,
+                        tipo_confirmacao: 'MOTORISTA',
+                        updated_at: trx.fn.now()
+                    });
+
+                if (quantidadeAtualizada !== 1) {
+                    return {
+                        erro: 'Não foi possível confirmar o pagamento.',
+                        status: 409
+                    };
+                }
+
+                const pagamentoAtualizado = await trx('pagamentos_corridas')
+                    .where('id', pagamento.id)
+                    .first();
+
+                return {
+                    pagamento: pagamentoAtualizado
+                };
+            });
+
+            if (resultado.erro) {
+                return response.status(resultado.status).json({
+                    error: resultado.erro
+                });
+            }
+
+            console.log('=================================');
+            console.log('PAGAMENTO PRESENCIAL CONFIRMADO');
+            console.log('Corrida:', corridaId);
+            console.log('Motorista:', motorista.id);
+            console.log('Modalidade: PRESENCIAL');
+            console.log('Status: APROVADO');
+            console.log('=================================');
+
+            return response.json({
+                message: 'Pagamento confirmado com sucesso.',
+                pagamento: resultado.pagamento
+            });
+
+        } catch (error) {
+            console.error(
+                'Erro ao confirmar pagamento:',
+                error
+            );
+
+            return response.status(500).json({
+                error: 'Erro ao confirmar pagamento.'
+            });
+        }
+    },
+
+    // ==========================================================
     // MINHA CORRIDA ATUAL
     // CLIENTE OU MOTORISTA
     // ==========================================================
-
+     
     async minha(request, response) {
 
         try {
@@ -1206,42 +1363,111 @@ module.exports = {
             if (usuario.tipo === 'MOTORISTA') {
 
                 const motorista = await connection('motoristas')
-                    .where(
-                        'usuario_id',
-                        usuarioId
-                    )
+                    .where('usuario_id', usuarioId)
                     .first();
 
                 if (!motorista) {
 
                     return response.status(403).json({
-                        error:
-                            'Cadastro de motorista não encontrado.'
+                        error: 'Cadastro de motorista não encontrado.'
                     });
 
                 }
 
-                const corrida = await connection('corridas')
-                    .where(
-                        'motorista_id',
-                        motorista.id
-                    )
-                    .whereIn(
+                // ==============================================
+                // PRIMEIRO: BUSCA CORRIDA EM ANDAMENTO
+                // ==============================================
+
+                let corrida = await connection('corridas')
+                    .where('motorista_id', motorista.id)
+                    .whereIn('status', [
+                        'ACEITA',
+                        'EM_ANDAMENTO'
+                    ])
+                    .orderBy('created_at', 'desc')
+                    .first();
+
+                // ==============================================
+                // SE NÃO EXISTIR, BUSCA CORRIDA FINALIZADA
+                // COM PAGAMENTO PENDENTE
+                // ==============================================
+
+                if (!corrida) {
+
+                    corrida = await connection('corridas')
+                        .join(
+                            'pagamentos_corridas',
+                            'pagamentos_corridas.corrida_id',
+                            'corridas.id'
+                        )
+                        .where(
+                            'corridas.motorista_id',
+                            motorista.id
+                        )
+                        .where(
+                            'corridas.status',
+                            'FINALIZADA'
+                        )
+                        .where(
+                            'pagamentos_corridas.status',
+                            'PENDENTE'
+                        )
+                        .select('corridas.*')
+                        .orderBy(
+                            'corridas.created_at',
+                            'desc'
+                        )
+                        .first();
+
+                }
+
+                // ==============================================
+                // NENHUMA CORRIDA ATUAL
+                // ==============================================
+
+                if (!corrida) {
+
+                    return response.json({
+                        corrida: null
+                    });
+
+                }
+
+                // ==============================================
+                // BUSCA PAGAMENTO DA CORRIDA
+                // ==============================================
+
+                const pagamento = await connection('pagamentos_corridas')
+                    .where('corrida_id', corrida.id)
+                    .select(
+                        'id',
+                        'corrida_id',
+                        'modalidade',
+                        'forma_pagamento',
                         'status',
-                        [
-                            'ACEITA',
-                            'EM_ANDAMENTO'
-                        ]
-                    )
-                    .orderBy(
-                        'created_at',
-                        'desc'
+                        'valor_bruto',
+                        'percentual_comissao',
+                        'graduacao_id',
+                        'graduacao_nome',
+                        'valor_comissao',
+                        'valor_liquido',
+                        'gateway',
+                        'confirmado_em',
+                        'tipo_confirmacao'
                     )
                     .first();
 
+                // ==============================================
+                // RESPOSTA PARA MOTORISTA
+                // ==============================================
+
                 return response.json({
-                    corrida: corrida || null
+                    corrida: {
+                        ...corrida,
+                        pagamento: pagamento || null
+                    }
                 });
+
             }
 
             // ==================================================
@@ -1255,22 +1481,13 @@ module.exports = {
                 // ==============================================
 
                 const corrida = await connection('corridas')
-                    .where(
-                        'cliente_id',
-                        usuarioId
-                    )
-                    .whereIn(
-                        'status',
-                        [
-                            'SOLICITADA',
-                            'ACEITA',
-                            'EM_ANDAMENTO'
-                        ]
-                    )
-                    .orderBy(
-                        'created_at',
-                        'desc'
-                    )
+                    .where('cliente_id', usuarioId)
+                    .whereIn('status', [
+                        'SOLICITADA',
+                        'ACEITA',
+                        'EM_ANDAMENTO'
+                    ])
+                    .orderBy('created_at', 'desc')
                     .first();
 
                 if (!corrida) {
@@ -1290,23 +1507,13 @@ module.exports = {
                 if (corrida.motorista_id) {
 
                     const motoristaBanco = await connection('motoristas')
-                        .where(
-                            'id',
-                            corrida.motorista_id
-                        )
+                        .where('id', corrida.motorista_id)
                         .first();
 
                     if (motoristaBanco) {
 
-                        // ==========================================
-                        // BUSCA DADOS DO USUÁRIO DO MOTORISTA
-                        // ==========================================
-
                         const usuarioMotorista = await connection('usuarios')
-                            .where(
-                                'id',
-                                motoristaBanco.usuario_id
-                            )
+                            .where('id', motoristaBanco.usuario_id)
                             .first();
 
                         motorista = {
@@ -1327,7 +1534,9 @@ module.exports = {
                             status: motoristaBanco.status,
                             online: motoristaBanco.online
                         };
+
                     }
+
                 }
 
                 // ==============================================
@@ -1338,7 +1547,7 @@ module.exports = {
                 console.log('MINHA CORRIDA - CLIENTE');
                 console.log('Corrida:', corrida.id);
                 console.log('Status:', corrida.status);
-                console.log('Motorista ID na corrida:', corrida.motorista_id);
+                console.log('Motorista ID:', corrida.motorista_id);
                 console.log('Motorista encontrado:', motorista);
                 console.log('======================================');
 
@@ -1352,6 +1561,7 @@ module.exports = {
                         motorista
                     }
                 });
+
             }
 
             // ==================================================
@@ -1359,8 +1569,7 @@ module.exports = {
             // ==================================================
 
             return response.status(403).json({
-                error:
-                    'Tipo de usuário não autorizado.'
+                error: 'Tipo de usuário não autorizado.'
             });
 
         } catch (error) {
@@ -1371,10 +1580,11 @@ module.exports = {
             );
 
             return response.status(500).json({
-                error:
-                    'Erro ao buscar minha corrida.'
+                error: 'Erro ao buscar minha corrida.'
             });
+
         }
+
     },
 
     // ==================================================

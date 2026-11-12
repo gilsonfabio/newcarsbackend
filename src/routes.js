@@ -74,6 +74,12 @@ routes.put(
     CorridaController.finalizar
 );
 
+routes.put(
+    '/corridas/:id/pagamento/confirmar',
+    auth,
+    CorridaController.confirmarPagamento
+);
+
 routes.get(
     '/corridas/historico', 
     auth, 
