@@ -1,3 +1,4 @@
+
 const express = require('express');
 
 const routes = express.Router();
@@ -8,9 +9,14 @@ const MotoristaController = require('./controllers/MotoristaController');
 const VeiculoController = require('./controllers/VeiculoController');
 const AdminMotoristaController = require('./controllers/AdminMotoristaController');
 const PasswordController = require('./controllers/PasswordController');
+const PagamentoController = require('./controllers/PagamentoController');
 
 const auth = require('./middlewares/auth');
 const admin = require('./middlewares/admin');
+
+// ==========================================================
+// PRINCIPAL
+// ==========================================================
 
 routes.get('/', (request, response) => {
 
@@ -29,8 +35,16 @@ routes.get('/health', (request, response) => {
 
 });
 
+// ==========================================================
+// AUTENTICAÇÃO
+// ==========================================================
+
 routes.post('/signIn', AuthController.signIn);
 routes.post('/signUp', AuthController.signUp);
+
+// ==========================================================
+// CORRIDAS
+// ==========================================================
 
 routes.post(
     '/corridas/estimativa',
@@ -81,15 +95,50 @@ routes.put(
 );
 
 routes.get(
-    '/corridas/historico', 
-    auth, 
+    '/corridas/historico',
+    auth,
     CorridaController.historico
 );
- 
+
 routes.put(
-  '/corridas/:id/cancelar',
-  auth,
-  CorridaController.cancelar
+    '/corridas/:id/cancelar',
+    auth,
+    CorridaController.cancelar
+);
+
+routes.put(
+    '/corridas/:id/recusar',
+    auth,
+    CorridaController.recusar
+);
+
+// ==========================================================
+// PAGAMENTOS ONLINE - MERCADO PAGO
+// ==========================================================
+
+// Criar PIX para uma corrida
+
+routes.post(
+    '/corridas/:id/pagamento/pix',
+    auth,
+    PagamentoController.criarPix
+);
+
+// Consultar pagamento de uma corrida
+
+routes.get(
+    '/corridas/:id/pagamento',
+    auth,
+    PagamentoController.consultar
+);
+
+// Webhook Mercado Pago
+// Não utilizar middleware auth: a autenticação é feita
+// pela assinatura HMAC enviada pelo próprio Mercado Pago.
+
+routes.post(
+    '/webhooks/mercadopago',
+    PagamentoController.webhook
 );
 
 // ==========================================================
@@ -103,7 +152,7 @@ routes.put(
 );
 
 routes.get(
-    '/marcas', 
+    '/marcas',
     VeiculoController.marcas
 );
 
@@ -133,12 +182,6 @@ routes.put(
     auth,
     admin,
     AdminMotoristaController.atualizarStatus
-);
-
-routes.put(
-    '/corridas/:id/recusar',
-    auth,
-    CorridaController.recusar
 );
 
 // ==========================================================
