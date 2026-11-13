@@ -40,7 +40,6 @@ function obterDadosPix(order) {
 // ==========================================================
 
 function validarAssinaturaWebhook(request) {
-
     const secret = process.env.MP_WEBHOOK_SECRET;
 
     if (!secret) {
@@ -48,12 +47,10 @@ function validarAssinaturaWebhook(request) {
     }
 
     const assinatura = request.headers['x-signature'];
-
     const requestId = request.headers['x-request-id'];
 
-    const dataId =
-        request.query['data.id'] ||
-        request.body?.data?.id;
+    // O identificador utilizado na assinatura vem da query string.
+    const dataId = request.query['data.id'];
 
     if (!assinatura || !requestId || !dataId) {
         return false;
@@ -62,19 +59,26 @@ function validarAssinaturaWebhook(request) {
     const partes = {};
 
     assinatura.split(',').forEach(parte => {
+        const separador = parte.indexOf('=');
 
-        const [chave, valor] = parte.trim().split('=');
+        if (separador === -1) return;
+
+        const chave = parte.substring(0, separador).trim();
+        const valor = parte.substring(separador + 1).trim();
 
         if (chave && valor) {
             partes[chave] = valor;
         }
-
     });
 
     const timestamp = partes.ts;
     const assinaturaRecebida = partes.v1;
 
-    if (!timestamp || !assinaturaRecebida) {
+    if (
+        !timestamp ||
+        !assinaturaRecebida ||
+        !/^[a-fA-F0-9]{64}$/.test(assinaturaRecebida)
+    ) {
         return false;
     }
 
@@ -98,9 +102,7 @@ function validarAssinaturaWebhook(request) {
         'hex'
     );
 
-    if (
-        bufferCalculado.length !== bufferRecebido.length
-    ) {
+    if (bufferCalculado.length !== bufferRecebido.length) {
         return false;
     }
 
@@ -536,21 +538,19 @@ module.exports = {
     // WEBHOOK MERCADO PAGO
     // ======================================================
 
+        
     async webhook(request, response) {
-
         try {
-
             // ==================================================
-            // VALIDAR ASSINATURA
+            // 1. VALIDAR ASSINATURA
             // ==================================================
 
             const assinaturaValida =
                 validarAssinaturaWebhook(request);
 
             if (!assinaturaValida) {
-
                 console.error(
-                    'Webhook Mercado Pago com assinatura inválida.'
+                    'Webhook Mercado Pago: assinatura inválida.'
                 );
 
                 return response.status(401).json({
@@ -559,46 +559,56 @@ module.exports = {
             }
 
             // ==================================================
-            // VALIDAR TIPO DE EVENTO
+            // 2. VALIDAR EVENTO
             // ==================================================
 
             if (request.body?.type !== 'order') {
-
                 return response.status(200).json({
                     received: true,
                     message: 'Evento ignorado.'
                 });
             }
 
-            const orderId =
-                request.query['data.id'] ||
-                request.body?.data?.id;
+            const orderId = request.query['data.id'];
 
             if (!orderId) {
-
                 return response.status(400).json({
                     error: 'Identificador da Order não informado.'
                 });
             }
 
             // ==================================================
-            // CONSULTAR ORDER DIRETAMENTE NO MERCADO PAGO
+            // 3. CONSULTAR ORDER NO MERCADO PAGO
             // ==================================================
 
             const order =
                 await MercadoPagoService.consultarOrder(orderId);
 
             if (!order || !order.id) {
+                throw new Error(
+                    'Order não encontrada no Mercado Pago.'
+                );
+            }
 
-                return response.status(404).json({
-                    error: 'Order não encontrada no Mercado Pago.'
+            // Confirma que a Order consultada é a mesma
+            // informada na notificação.
+
+            if (String(order.id) !== String(orderId)) {
+                console.error('Identificador da Order divergente.');
+
+                return response.status(200).json({
+                    received: true,
+                    message: 'Identificador da Order divergente.'
                 });
             }
+
+            // ==================================================
+            // 4. VALIDAR REFERÊNCIA EXTERNA
+            // ==================================================
 
             const corridaId = order.external_reference;
 
             if (!corridaId) {
-
                 return response.status(200).json({
                     received: true,
                     message: 'Order sem referência externa.'
@@ -606,146 +616,169 @@ module.exports = {
             }
 
             // ==================================================
-            // LOCALIZAR PAGAMENTO
+            // 5. LOCALIZAR PAGAMENTO E PROCESSAR
             // ==================================================
 
-            await connection.transaction(async trx => {
+            const resultado = await connection.transaction(
+                async trx => {
 
-                const pagamento = await trx('pagamentos_corridas')
-                    .where('corrida_id', corridaId)
-                    .where('modalidade', 'ONLINE')
-                    .where('forma_pagamento', 'PIX')
-                    .forUpdate()
-                    .first();
+                    const pagamento = await trx('pagamentos_corridas')
+                        .where('corrida_id', corridaId)
+                        .where('modalidade', 'ONLINE')
+                        .where('forma_pagamento', 'PIX')
+                        .forUpdate()
+                        .first();
 
-                if (!pagamento) {
-
-                    console.warn(
-                        'Pagamento local não encontrado:',
-                        corridaId
-                    );
-
-                    return;
-                }
-
-                // Se já existe outro pedido associado,
-                // não permitir que este webhook altere o pagamento.
-
-                if (
-                    pagamento.gateway_transacao_id &&
-                    pagamento.gateway_transacao_id !== order.id
-                ) {
-
-                    console.warn(
-                        'Order diferente da registrada no pagamento:',
-                        order.id
-                    );
-
-                    return;
-                }
-
-                // ==================================================
-                // CONFERIR VALOR DA ORDER
-                // ==================================================
-
-                if (
-                    !valoresIguais(
-                        order.total_amount,
-                        pagamento.valor_bruto
-                    )
-                ) {
-
-                    console.error(
-                        'Valor da Order diferente do pagamento local.',
-                        {
-                            orderId: order.id,
-                            valorMercadoPago: order.total_amount,
-                            valorBanco: pagamento.valor_bruto
-                        }
-                    );
-
-                    return;
-                }
-
-                const pix = obterDadosPix(order);
-
-                // ==================================================
-                // ATUALIZAR DADOS DO GATEWAY
-                // ==================================================
-
-                const atualizacao = {
-
-                    gateway: 'MERCADO_PAGO',
-
-                    gateway_transacao_id: order.id,
-
-                    gateway_status: pix.gateway_status,
-
-                    gateway_status_detail:
-                        pix.gateway_status_detail,
-
-                    gateway_qr_code: pix.qr_code,
-
-                    gateway_qr_code_base64:
-                        pix.qr_code_base64,
-
-                    gateway_ticket_url: pix.ticket_url
-
-                };
-
-                // ==================================================
-                // CONFIRMAR SOMENTE SE ESTIVER APROVADO
-                // ==================================================
-
-                if (
-                    order.status === 'processed' &&
-                    order.status_detail === 'accredited'
-                ) {
-
-                    if (pagamento.status === 'PENDENTE') {
-
-                        atualizacao.status = 'APROVADO';
-
-                        atualizacao.confirmado_em =
-                            trx.fn.now();
-
-                        atualizacao.confirmado_por = null;
-
-                        atualizacao.tipo_confirmacao = 'GATEWAY';
-
+                    if (!pagamento) {
+                        return 'PAGAMENTO_NAO_ENCONTRADO';
                     }
 
+                    // ==========================================
+                    // 6. CONFERIR GATEWAY
+                    // ==========================================
+
+                    if (
+                        pagamento.gateway &&
+                        pagamento.gateway !== 'MERCADO_PAGO'
+                    ) {
+                        return 'GATEWAY_DIVERGENTE';
+                    }
+
+                    // ==========================================
+                    // 7. CONFERIR ORDER REGISTRADA
+                    // ==========================================
+
+                    if (!pagamento.gateway_transacao_id) {
+                        // Pode ser uma notificação que chegou
+                        // antes de salvarmos o ID da Order.
+                        // Retornar erro permite nova tentativa.
+
+                        throw new Error(
+                            'Order ainda não vinculada ao pagamento local.'
+                        );
+                    }
+
+                    if (
+                        String(pagamento.gateway_transacao_id) !==
+                        String(order.id)
+                    ) {
+                        console.error(
+                            'Order recebida diferente da registrada.',
+                            {
+                                recebida: order.id,
+                                registrada: pagamento.gateway_transacao_id
+                            }
+                        );
+
+                        return 'ORDER_DIVERGENTE';
+                    }
+
+                    // ==========================================
+                    // 8. PROTEGER PAGAMENTOS ENCERRADOS
+                    // ==========================================
+
+                    if (pagamento.status === 'APROVADO') {
+                        return 'JA_APROVADO';
+                    }
+
+                    if (
+                        !['PENDENTE', 'PROCESSANDO'].includes(
+                            pagamento.status
+                        )
+                    ) {
+                        return 'STATUS_NAO_PERMITE_APROVACAO';
+                    }
+
+                    // ==========================================
+                    // 9. CONFERIR VALOR
+                    // ==========================================
+
+                    if (
+                        !valoresIguais(
+                            order.total_amount,
+                            pagamento.valor_bruto
+                        )
+                    ) {
+                        console.error(
+                            'Divergência no valor do pagamento.',
+                            {
+                                orderId: order.id,
+                                valorMercadoPago: order.total_amount,
+                                valorBanco: pagamento.valor_bruto
+                            }
+                        );
+
+                        return 'VALOR_DIVERGENTE';
+                    }
+
+                    // ==========================================
+                    // 10. ATUALIZAR INFORMAÇÕES DO GATEWAY
+                    // ==========================================
+
+                    const pix = obterDadosPix(order);
+
+                    const atualizacao = {
+                        gateway_status: pix.gateway_status,
+                        gateway_status_detail: pix.gateway_status_detail
+                    };
+
+                    // ==========================================
+                    // 11. APROVAR SOMENTE PAGAMENTO CREDITADO
+                    // ==========================================
+
+                    if (
+                        order.status === 'processed' &&
+                        order.status_detail === 'accredited'
+                    ) {
+                        atualizacao.status = 'APROVADO';
+                        atualizacao.confirmado_em = trx.fn.now();
+                        atualizacao.confirmado_por = null;
+                        atualizacao.tipo_confirmacao = 'GATEWAY';
+                    }
+
+                    await trx('pagamentos_corridas')
+                        .where('id', pagamento.id)
+                        .whereIn('status', ['PENDENTE', 'PROCESSANDO'])
+                        .update(atualizacao);
+
+                    return atualizacao.status === 'APROVADO'
+                        ? 'APROVADO'
+                        : 'ATUALIZADO';
                 }
+            );
 
-                await trx('pagamentos_corridas')
-                    .where('id', pagamento.id)
-                    .whereNot('status', 'APROVADO')
-                    .update(atualizacao);
+            // ==================================================
+            // 12. RESPOSTA
+            // ==================================================
 
-            });
+            if (resultado === 'PAGAMENTO_NAO_ENCONTRADO') {
+                console.warn(
+                    'Pagamento não encontrado para corrida:',
+                    corridaId
+                );
+            }
+
+            if (resultado === 'VALOR_DIVERGENTE') {
+                console.error(
+                    'Webhook ignorado por divergência de valor.'
+                );
+            }
 
             return response.status(200).json({
-
                 received: true,
-
-                message: 'Webhook processado com sucesso.'
-
+                resultado
             });
 
         } catch (error) {
-
             console.error(
-                'Erro no webhook Mercado Pago:',
+                'Erro no WebHook Mercado Pago:',
                 error
             );
 
-            // Retorno 500 permite que o Mercado Pago tente
-            // entregar a notificação novamente.
-
             return response.status(500).json({
-                error: 'Erro ao processar webhook.'
+                error: 'Erro ao processar WebHook.'
             });
         }
-    }
+    },
 
 };
