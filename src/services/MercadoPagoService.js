@@ -101,7 +101,8 @@ async function criarOrderPix({
         },
 
         payer: {
-            email
+            email,
+            first_name: 'APRO'
         }
 
     };
