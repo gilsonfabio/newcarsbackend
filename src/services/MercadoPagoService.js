@@ -72,6 +72,7 @@ async function criarOrderPix({
 }) {
 
     const valorFormatado = Number(valor).toFixed(2);
+    const ambienteTeste = process.env.MP_AMBIENTE === 'teste';
 
     const body = {
 
@@ -100,9 +101,10 @@ async function criarOrderPix({
 
         },
 
-        payer: process.env.MP_ACCESS_TOKEN.startsWith('TEST-') ? {
-            email: 'test_payer@example.com',
-            first_name: 'APRO'
+        payer: ambienteTeste ?
+            {
+                email: 'test_payer@example.com',
+                first_name: 'APRO'
             }
         : {
             email
