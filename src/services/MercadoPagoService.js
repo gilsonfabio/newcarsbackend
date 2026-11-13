@@ -100,11 +100,13 @@ async function criarOrderPix({
 
         },
 
-        payer: {
-            email,
+        payer: process.env.MP_ACCESS_TOKEN.startsWith('TEST-') ? {
+            email: 'test_payer@example.com',
             first_name: 'APRO'
+            }
+        : {
+            email
         }
-
     };
 
     return requisicaoMercadoPago('/v1/orders', {
